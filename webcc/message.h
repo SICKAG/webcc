@@ -45,7 +45,7 @@ public:
     return !headers_.Get(key).empty();
   }
 
-  Headers GetHeaders() const {
+  const Headers& headers() const {
     return headers_;
   }
 
