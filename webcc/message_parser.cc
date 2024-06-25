@@ -48,10 +48,12 @@ bool StringBodyHandler::Finish() {
   auto body = std::make_shared<StringBody>(std::move(content_), IsCompressed());
 
 #if WEBCC_ENABLE_GZIP
-  LOG_INFO("Decompress the HTTP content");
-  if (!body->Decompress()) {
-    LOG_ERRO("Cannot decompress the HTTP content");
-    return false;
+  if (body->compressed()) {
+    LOG_INFO("Decompress the HTTP content");
+    if (!body->Decompress()) {
+      LOG_ERRO("Cannot decompress the HTTP content");
+      return false;
+    }
   }
 #else
   if (body->compressed()) {
@@ -131,6 +133,7 @@ void MessageParser::Init(Message* message) {
   start_line_parsed_ = false;
   content_length_parsed_ = false;
   header_ended_ = false;
+  header_just_ended_ = false;
   chunked_ = false;
   chunk_size_ = kInvalidSize;
   finished_ = false;
@@ -138,6 +141,9 @@ void MessageParser::Init(Message* message) {
 
 bool MessageParser::Parse(const char* data, std::size_t length) {
   if (header_ended_) {
+    if (header_just_ended_) {
+      header_just_ended_ = false;
+    }
     return ParseContent(data, length);
   }
 
@@ -191,6 +197,7 @@ bool MessageParser::ParseHeaders() {
 
     if (line.empty()) {
       header_ended_ = true;
+      header_just_ended_ = true;
       break;
     }
 

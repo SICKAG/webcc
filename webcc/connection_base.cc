@@ -24,7 +24,7 @@ ConnectionBase::ConnectionBase(boost::asio::io_context& io_context,
 }
 
 void ConnectionBase::Close() {
-  LOG_INFO("Shutdown and close socket...");
+  LOG_INFO("Shut down and close socket...");
 
   // Initiate graceful connection closure.
   // Socket close VS. shutdown:
@@ -184,7 +184,7 @@ void ConnectionBase::AsyncWriteBody() {
 }
 
 void ConnectionBase::OnWriteBody(boost::system::error_code ec,
-                                 std::size_t /*length*/) {
+                                 std::size_t length) {
 #if WEBCC_STUDY_SERVER_THREADING
   LOG_USER("[%u] OnWriteBody()", (unsigned int)this);
 #endif

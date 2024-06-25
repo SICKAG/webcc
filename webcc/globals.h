@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "boost/asio/buffer.hpp"  // for const_buffer
+#include "boost/system/error_code.hpp"
 
 #include "webcc/config.h"
 #include "webcc/string.h"
@@ -26,12 +27,17 @@ using UrlArgs = std::vector<std::string>;
 
 using Payload = std::vector<boost::asio::const_buffer>;
 
+// Asynchronous read/write handler.
+using AsyncRWHandler =
+    std::function<void(boost::system::error_code, std::size_t)>;
+
+// Parameters: current, total, mode(read/write)
+// NOTE: The (read) total length will be kInvalidSize if the content is chunked.
+using ProgressCallback = std::function<void(std::size_t, std::size_t, bool)>;
+
 // -----------------------------------------------------------------------------
 
 constexpr std::size_t kInvalidSize = std::numeric_limits<std::size_t>::max();
-
-// Default timeout for reading response.
-constexpr int kMaxReadSeconds = 30;
 
 // Max size of the HTTP body to dump/log.
 // If the HTTP, e.g., response, has a very large content, it will be truncated
@@ -136,6 +142,14 @@ enum class ContentEncoding {
   kUnknown,
   kGzip,
   kDeflate,
+};
+
+// -----------------------------------------------------------------------------
+
+// SSL verification mode.
+enum class SslVerify {
+  kDefault,
+  kHostName,  // use ssl::host_name_verification
 };
 
 // -----------------------------------------------------------------------------

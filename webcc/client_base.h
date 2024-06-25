@@ -1,8 +1,9 @@
-#ifndef WEBCC_ASYNC_CLIENT_BASE_H_
-#define WEBCC_ASYNC_CLIENT_BASE_H_
+#ifndef WEBCC_CLIENT_BASE_H_
+#define WEBCC_CLIENT_BASE_H_
 
-// Asynchronous HTTP client base class.
+// HTTP client base class.
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,18 +22,24 @@ namespace webcc {
 using SocketType = boost::asio::basic_socket<boost::asio::ip::tcp,
                                              boost::asio::any_io_executor>;
 
-using ProgressCallback =
-    std::function<void(std::size_t current, std::size_t total)>;
+void SocketCancel(SocketType& socket);
+void SocketShutdown(SocketType& socket);
+void SocketClose(SocketType& socket);
 
-class AsyncClientBase : public std::enable_shared_from_this<AsyncClientBase> {
+inline void SocketShutdownClose(SocketType& socket) {
+  SocketShutdown(socket);
+  SocketClose(socket);
+}
+
+class ClientBase : public std::enable_shared_from_this<ClientBase> {
 public:
-  AsyncClientBase(boost::asio::io_context& io_context,
-                  std::string_view default_port);
+  ClientBase(boost::asio::io_context& io_context,
+             std::string_view default_port);
 
-  AsyncClientBase(const AsyncClientBase&) = delete;
-  AsyncClientBase& operator=(const AsyncClientBase&) = delete;
+  ClientBase(const ClientBase&) = delete;
+  ClientBase& operator=(const ClientBase&) = delete;
 
-  virtual ~AsyncClientBase() = default;
+  virtual ~ClientBase() = default;
 
   void set_buffer_size(std::size_t buffer_size) {
     if (buffer_size > 0) {
@@ -46,23 +53,28 @@ public:
     }
   }
 
-  void set_read_timeout(int timeout)  {
+  void set_read_timeout(int timeout) {
     if (timeout > 0) {
       read_timeout_ = timeout;
     }
   }
 
-  // Set progress callback to be informed about the read progress.
+  void set_subsequent_read_timeout(int timeout) {
+    if (timeout > 0) {
+      subsequent_read_timeout_ = timeout;
+    }
+  }
+
+  // Set progress callback to be informed about the read/write progress.
   // NOTE: Don't use move semantics because in practice, there is no difference
   //       between copying and moving an object of a closure type.
-  // TODO: Support write progress
   void set_progress_callback(ProgressCallback callback) {
     progress_callback_ = callback;
   }
 
-  // Close the connection (shutdown and close socket).
+  // Close the connection (shut down and close socket).
   // The async operation on the socket will be canceled.
-  virtual void Close();
+  virtual bool Close();
 
   bool connected() const {
     return connected_;
@@ -71,6 +83,9 @@ public:
   RequestPtr request() const {
     return request_;
   }
+
+  // Send a request to the server.
+  void Send(RequestPtr request, bool stream = false);
 
   ResponsePtr response() const {
     return response_;
@@ -81,36 +96,32 @@ public:
   }
 
   // Reset response object.
-  // Used to make sure the response object will released even the client object
-  // itself will be cached for keep-alive purpose.
+  // Used to make sure the response object will be released even the client
+  // object itself will be cached for keep-alive purpose.
   void Reset() {
     response_.reset();
     response_parser_.Init(nullptr, false);
   }
 
 protected:
-  // Read/write handler
-  using RWHandler = std::function<void(boost::system::error_code, std::size_t)>;
-
   // Get underlying socket.
   virtual SocketType& GetSocket() = 0;
+
+  virtual void AsyncWrite(const std::vector<boost::asio::const_buffer>& buffers,
+                          AsyncRWHandler&& handler) = 0;
+
+  virtual void AsyncReadSome(boost::asio::mutable_buffer buffer,
+                             AsyncRWHandler&& handler) = 0;
+
+  // Request begin.
+  // Initialize the states here (e.g., reset error and flags).
+  virtual void RequestBegin() {
+    error_.Clear();
+  }
 
   virtual void OnConnected() {
     AsyncWrite();
   }
-
-  // The current request has ended.
-  virtual void RequestEnd() = 0;
-
-  virtual void AsyncWrite(const std::vector<boost::asio::const_buffer>& buffers,
-                          RWHandler&& handler) = 0;
-
-  virtual void AsyncReadSome(boost::asio::mutable_buffer buffer,
-                             RWHandler&& handler) = 0;
-
-  // Send a request to the server.
-  // Check `error()` for any error.
-  void AsyncSend(RequestPtr request, bool stream = false);
 
   void AsyncResolve();
 
@@ -131,9 +142,9 @@ protected:
   void AsyncRead();
   void OnRead(boost::system::error_code ec, std::size_t length);
 
-  void AsyncWaitDeadlineTimer(int seconds);
+  void AsyncWaitDeadlineTimer(int seconds, const char* what);
   void OnDeadlineTimer(boost::system::error_code ec);
-  void StopDeadlineTimer();
+  void StopDeadlineTimer(const char* what);
 
 protected:
   boost::asio::io_context& io_context_;
@@ -157,29 +168,39 @@ protected:
   std::size_t buffer_size_ = kBufferSize;
 
   // Timeout (seconds) for connecting to server.
-  // Default as 0 to disable our own control (i.e., deadline_timer_).
+  // Default as 0 to disable our own timeout control.
   int connect_timeout_ = 0;
 
   // Timeout (seconds) for reading response.
-  int read_timeout_ = kMaxReadSeconds;
+  int read_timeout_ = 30;
 
-  // Deadline timer for connecting to server.
+  // Timeout (seconds) for each subsequent read during reading a response.
+  // A reasonable value should be much less than `read_timeout_`.
+  int subsequent_read_timeout_ = 10;
+
+  // Deadline timer for socket connect, write and read operations.
   boost::asio::steady_timer deadline_timer_;
-  bool deadline_timer_stopped_ = true;
+  std::atomic_bool deadline_timer_active_ = false;
 
   // Socket connected or not.
-  bool connected_ = false;
-
-  // The length already read.
-  std::size_t length_read_ = 0;
+  std::atomic_bool connected_ = false;
 
   // Progress callback (optional).
   ProgressCallback progress_callback_;
+
+  // The length already read or written.
+  std::size_t current_length_ = 0;
+
+  // The total length of the response or request.
+  // It will be kInvalidSize if the content is chunked.
+  std::size_t total_length_ = 0;
 
   // Current error.
   Error error_;
 };
 
+using ClientPtr = std::shared_ptr<ClientBase>;
+
 }  // namespace webcc
 
-#endif  // WEBCC_ASYNC_CLIENT_BASE_H_
+#endif  // WEBCC_CLIENT_BASE_H_

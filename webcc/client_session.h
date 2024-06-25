@@ -4,8 +4,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <thread>
-#include <vector>
 
 #include "boost/asio/io_context.hpp"
 #include "boost/asio/ssl/context.hpp"
@@ -13,7 +11,6 @@
 #include "webcc/client_pool.h"
 #include "webcc/request_builder.h"
 #include "webcc/response.h"
-#include "webcc/ssl_client.h"  // for enum class SslVerify
 
 namespace webcc {
 
@@ -45,7 +42,6 @@ public:
   explicit ClientSession(std::string_view ssl_context_key = "default")
       : ssl_context_key_(ssl_context_key) {
     InitHeaders();
-    Start();
   }
 
   ClientSession(const ClientSession&) = delete;
@@ -64,6 +60,18 @@ public:
   void set_read_timeout(int timeout) {
     if (timeout > 0) {
       read_timeout_ = timeout;
+    }
+  }
+
+  void set_subsequent_read_timeout(int timeout) {
+    if (timeout > 0) {
+      subsequent_read_timeout_ = timeout;
+    }
+  }
+
+  void set_ssl_shutdown_timeout(int timeout) {
+    if (timeout > 0) {
+      ssl_shutdown_timeout_ = timeout;
     }
   }
 
@@ -122,11 +130,6 @@ public:
     return Auth("Token", token);
   }
 
-  // Start Asio loop in a thread.
-  // You don't have to call Start() manually because it's called by the
-  // constructor.
-  void Start();
-
   // Stop Asio loop.
   // You can call Start() to resume the loop.
   void Stop();
@@ -149,26 +152,13 @@ private:
   void InitHeaders();
 
   // Create a client object according to the URL scheme.
-  BlockingClientPtr CreateClient(const std::string& url_scheme);
-
-  ResponsePtr DoSend(RequestPtr request, bool stream,
-                     ProgressCallback callback);
+  ClientPtr CreateClient(const std::string& url_scheme);
 
 private:
   boost::asio::io_context io_context_;
 
-  // The thread to run Asio loop.
-  std::unique_ptr<std::thread> io_thread_;
-
-  using ExecutorType = boost::asio::io_context::executor_type;
-  using WorkGuard = boost::asio::executor_work_guard<ExecutorType>;
-  std::unique_ptr<WorkGuard> work_guard_;
-
   // The key to find the SSL context.
   std::string ssl_context_key_;
-
-  // Is Asio loop running?
-  bool started_ = false;
 
   // The mutex to guard the session state (start, stop, cancel, etc.).
   std::mutex mutex_;
@@ -190,6 +180,12 @@ private:
   // Timeout (seconds) for reading response.
   int read_timeout_ = 0;
 
+  // Timeout (seconds) for each subsequent read during reading a response.
+  int subsequent_read_timeout_ = 0;
+
+  // Timeout (seconds) for shutdown SSL.
+  int ssl_shutdown_timeout_ = 0;
+
   // The size of the buffer for reading response.
   // 0 means default value will be used.
   std::size_t buffer_size_ = 0u;
@@ -198,7 +194,7 @@ private:
   ClientPool client_pool_;
 
   // Current requesting client.
-  BlockingClientPtr current_client_;
+  ClientPtr current_client_;
 };
 
 }  // namespace webcc

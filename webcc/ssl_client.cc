@@ -1,7 +1,7 @@
 #include "webcc/ssl_client.h"
 
-#include "boost/asio/write.hpp"
 #include "boost/asio/ssl.hpp"
+#include "boost/asio/write.hpp"
 
 #include "webcc/logger.h"
 
@@ -11,29 +11,65 @@ namespace ssl = boost::asio::ssl;
 
 namespace webcc {
 
-void SslClient::Close() {
-  boost::system::error_code ec;
-  GetSocket().cancel(ec);
+SslClient::SslClient(boost::asio::io_context& io_context,
+                     boost::asio::ssl::context& ssl_context,
+                     SslVerify ssl_verify)
+    : ClientBase(io_context, "443"),
+      ssl_stream_(io_context, ssl_context),
+      ssl_verify_(ssl_verify),
+      ssl_shutdown_timer_(io_context) {
+}
 
-  // Shutdown SSL
-  ssl_stream_.shutdown(ec);
-  if (ec) {
-    // See: https://stackoverflow.com/a/25703699
-    LOG_WARN("SSL shutdown error (%s)", ec.message().c_str());
-    ec.clear();
+bool SslClient::Close() {
+  bool new_async_op = false;
+  SocketType& socket = GetSocket();
+
+  if (socket.is_open()) {
+    SocketCancel(socket);
+
+    if (connected_) {
+      connected_ = false;
+
+      if (hand_shaken_) {
+        // SSL shudown is necessary only if handshake has completed.
+        LOG_INFO("Shut down SSL...");
+
+        // Stop the timer for connect, write or read operation.
+        StopDeadlineTimer("close");
+
+        LOG_INFO("Start ssl shutdown timer (%ds)", ssl_shutdown_timeout_);
+        ssl_shutdown_timer_active_ = true;
+        ssl_shutdown_timer_.expires_after(
+            boost::asio::chrono::seconds(ssl_shutdown_timeout_));
+        ssl_shutdown_timer_.async_wait(
+            std::bind(&SslClient::OnSslShutdownTimer, shared_from_this(), _1));
+
+        ssl_stream_.async_shutdown(
+            std::bind(&SslClient::OnSslShutdown, shared_from_this(), _1));
+
+        new_async_op = true;
+
+      } else {
+        SocketShutdownClose(socket);
+      }
+    } else {
+      SocketClose(socket);
+    }
+  } else {
+    // TODO: resolver_.cancel() ?
   }
 
-  BlockingClientBase::Close();
+  return new_async_op;
 }
 
 void SslClient::AsyncWrite(
     const std::vector<boost::asio::const_buffer>& buffers,
-    RWHandler&& handler) {
+    AsyncRWHandler&& handler) {
   boost::asio::async_write(ssl_stream_, buffers, std::move(handler));
 }
 
 void SslClient::AsyncReadSome(boost::asio::mutable_buffer buffer,
-                              RWHandler&& handler) {
+                              AsyncRWHandler&& handler) {
   ssl_stream_.async_read_some(buffer, std::move(handler));
 }
 
@@ -68,14 +104,67 @@ void SslClient::OnConnected() {
 void SslClient::OnHandshake(boost::system::error_code ec) {
   if (ec) {
     LOG_ERRO("Handshake error (%s)", ec.message().c_str());
+    Close();
     error_.Set(error_codes::kHandshakeError, "Handshake error");
-    RequestEnd();
     return;
   }
 
   LOG_INFO("Handshake OK");
+  hand_shaken_ = true;
 
-  BlockingClientBase::AsyncWrite();
+  ClientBase::AsyncWrite();
+}
+
+void SslClient::OnSslShutdownTimer(boost::system::error_code ec) {
+  if (ec == boost::asio::error::operation_aborted) {
+    LOG_INFO("SSL shutdown timer canceled");
+    return;
+  }
+
+  LOG_INFO("Cancel the SSL shutdown");
+
+  ssl_shutdown_timer_active_ = false;
+
+  GetSocket().cancel(ec);
+  if (ec) {
+    LOG_WARN("Socket cancel error (%s)", ec.message().c_str());
+  }
+}
+
+void SslClient::OnSslShutdown(boost::system::error_code ec) {
+  StopSslShutdownTimer();
+
+  // See: https://stackoverflow.com/a/25703699
+  if (ec == boost::asio::error::eof) {
+    ec = {};  // Not an error
+  }
+
+  if (ec) {
+    // Failed or canceled by the deadline timer.
+    LOG_WARN("SSL shutdown error (%s)", ec.message().c_str());
+  } else {
+    LOG_INFO("SSL shutdown complete");
+  }
+
+  // Continue to shut down and close the socket.
+  SocketShutdownClose(GetSocket());
+}
+
+void SslClient::StopSslShutdownTimer() {
+  if (!ssl_shutdown_timer_active_) {
+    return;
+  }
+
+  ssl_shutdown_timer_active_ = false;
+
+  LOG_INFO("Cancel ssl shutdown timer");
+
+  try {
+    ssl_shutdown_timer_.cancel();
+
+  } catch (const boost::system::system_error& e) {
+    LOG_ERRO("Ssl shutdown timer cancel error: %s", e.what());
+  }
 }
 
 }  // namespace webcc

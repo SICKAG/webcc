@@ -4,48 +4,71 @@
 #include "boost/asio/ssl/context.hpp"
 #include "boost/asio/ssl/stream.hpp"
 
-#include "webcc/blocking_client_base.h"
+#include "webcc/client_base.h"
 
 namespace webcc {
 
-// SSL verification mode.
-enum class SslVerify {
-  kDefault,
-  kHostName,  // use ssl::host_name_verification
-};
-
-class SslClient final : public BlockingClientBase {
+class SslClient final : public ClientBase {
 public:
   SslClient(boost::asio::io_context& io_context,
-            boost::asio::ssl::context& ssl_context, SslVerify ssl_verify)
-      : BlockingClientBase(io_context, "443"),
-        ssl_stream_(io_context, ssl_context),
-        ssl_verify_(ssl_verify) {
-  }
+            boost::asio::ssl::context& ssl_context, SslVerify ssl_verify);
 
   ~SslClient() override = default;
 
-  void Close() override;
+  std::shared_ptr<SslClient> shared_from_this() {
+    return std::dynamic_pointer_cast<SslClient>(ClientBase::shared_from_this());
+  }
+
+  bool Close() override;
+
+  void set_ssl_shutdown_timeout(int timeout) {
+    if (timeout > 0) {
+      ssl_shutdown_timeout_ = timeout;
+    }
+  }
 
 protected:
   SocketType& GetSocket() override {
     return ssl_stream_.lowest_layer();
   }
 
-  void OnConnected() override;
-
   void AsyncWrite(const std::vector<boost::asio::const_buffer>& buffers,
-                  RWHandler&& handler) override;
+                  AsyncRWHandler&& handler) override;
 
   void AsyncReadSome(boost::asio::mutable_buffer buffer,
-                     RWHandler&& handler) override;
+                     AsyncRWHandler&& handler) override;
+
+  void RequestBegin() override {
+    ClientBase::RequestBegin();
+    hand_shaken_ = false;
+  }
+
+  void OnConnected() override;
 
 private:
   void OnHandshake(boost::system::error_code ec);
 
+  void OnSslShutdownTimer(boost::system::error_code ec);
+
+  void OnSslShutdown(boost::system::error_code ec);
+
+  void StopSslShutdownTimer();
+
+private:
   boost::asio::ssl::stream<boost::asio::ip::tcp::socket> ssl_stream_;
 
+  // SSL verification mode.
   SslVerify ssl_verify_;
+
+  // SSL handshake finished or not.
+  std::atomic_bool hand_shaken_ = false;
+
+  // Timeout (seconds) for SSL shutdown.
+  int ssl_shutdown_timeout_ = 10;
+
+  // Deadline timer for SSL shutdown.
+  boost::asio::steady_timer ssl_shutdown_timer_;
+  std::atomic_bool ssl_shutdown_timer_active_ = false;
 };
 
 }  // namespace webcc

@@ -28,15 +28,15 @@ public:
   // Override to firstly handshake before read the client request.
   void Start() override;
 
-  // Override to firstly shutdown SSL.
+  // Override to firstly shut down SSL.
   void Close() override;
 
 protected:
   void AsyncWrite(const std::vector<boost::asio::const_buffer>& buffers,
-                  RWHandler&& handler) override;
+                  AsyncRWHandler&& handler) override;
 
   void AsyncReadSome(boost::asio::mutable_buffer buffer,
-                     RWHandler&& handler) override;
+                     AsyncRWHandler&& handler) override;
 
 private:
   void OnHandshake(boost::system::error_code ec);
