@@ -21,11 +21,11 @@ void SslConnection::Close() {
   GetSocket().cancel(ec);
 
   // Shutdown SSL
-  ssl_stream_.shutdown(ec);
-  if (ec) {
-    LOG_WARN("SSL shutdown error (%s)", ec.message().c_str());
-    ec.clear();
-  }
+  //ssl_stream_.shutdown(ec);
+  //if (ec) {
+  //  LOG_WARN("SSL shutdown error (%s)", ec.message().c_str());
+  //  ec.clear();
+  //}
 
   ConnectionBase::Close();
 }
