@@ -38,6 +38,12 @@ void ConnectionPool::Clear() {
     for (auto& c : connections_) {
       c->Close();
     }
+
+    // Closing the connection will not cancel any pending SSL operations (handshake).
+    // If the connection gets destructed before the handler of such an operation completes, it can cause a segfault.
+    // See also: https://github.com/chriskohlhoff/asio/issues/355
+    Sleep(500);
+
     connections_.clear();
   }
 }
